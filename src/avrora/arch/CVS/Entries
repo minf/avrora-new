@@ -1,0 +1,12 @@
+/AbstractArchitecture.java/1.1.1.1/Tue Dec 16 01:38:45 2008//
+/AbstractAssembler.java/1.1.1.1/Tue Dec 16 01:38:45 2008//
+/AbstractDisassembler.java/1.1.1.1/Tue Dec 16 01:38:45 2008//
+/AbstractInstr.java/1.1.1.1/Tue Dec 16 01:38:45 2008//
+/AbstractParser.java/1.1.1.1/Tue Dec 16 01:38:45 2008//
+/ArchitectureRegistry.java/1.1.1.1/Tue Dec 16 01:38:45 2008//
+/avr.isdl/1.1.1.1/Tue Dec 16 01:38:45 2008//
+/mips32.isdl/1.1.1.1/Tue Dec 16 01:38:45 2008//
+/msp430.isdl/1.1.1.1/Tue Dec 16 01:38:45 2008//
+D/avr////
+D/legacy////
+D/msp430////
