@@ -49,7 +49,7 @@ import java.util.*;
  */
 public class Main {
 
-    static final Options mainOptions = new Options();
+    public static final Options mainOptions = new Options();
 
     public static final Option.Str INPUT = mainOptions.newOption("input", "auto",
             "This option selects among the available program formats as input to Avrora. " +

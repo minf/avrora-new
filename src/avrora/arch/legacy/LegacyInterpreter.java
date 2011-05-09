@@ -38,6 +38,21 @@ import avrora.sim.*;
 import avrora.sim.mcu.MCUProperties;
 import cck.util.Arithmetic;
 
+import avrora.Main;
+import avrora.syntax.objdump.ObjDumpProgramReader;
+import avrora.core.Program;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.util.zip.Inflater;
+import java.util.zip.DataFormatException;
+import java.io.File;
+import java.io.Writer;
+import java.io.FileWriter;
+import java.io.IOException;
+import java.util.Date;
+
 /**
  * The <code>LegacyInterpreter</code> class is largely generated from the instruction specification. The
  * framework around the generated code (utilities) has been written by hand, but most of the code for each
@@ -60,6 +75,15 @@ public class LegacyInterpreter extends AtmelInterpreter implements LegacyInstrVi
 
     public static final LegacyRegister RZ = LegacyRegister.Z;
 
+    // instance variables for the decompression microcontroller
+
+    private static final int BLOCK_SIZE = 1024;
+
+    private LegacyInstr cache[] = new LegacyInstr[BLOCK_SIZE]; // the cache holds the currently executed code block in an uncompressed manner
+    private int compressed_lat[]; // the LAT holding the offsets of the compressed code blocks
+    private int uncompressed_lat[]; // the LAT holding the offsets of the uncompressed code blocks
+    private int block = -1; // current block
+
     /**
      * The constructor for the <code>Interpreter</code> class builds the internal data structures needed to
      * store the complete state of the machine, including registers, IO registers, the SRAM, and the flash.
@@ -75,6 +99,219 @@ public class LegacyInterpreter extends AtmelInterpreter implements LegacyInstrVi
         // this class and its methods are performance critical
         // observed speedup with this call on Hotspot
         Compiler.compileClass(getClass());
+
+        // read the LAT into memory
+        // we could read the LAT on every cache miss, but for performance reasons we keep it in memory
+
+        try {
+            readLAT();
+        } catch(IOException e) {
+            e.printStackTrace();
+        }
+    }
+
+    // simulate unsigned ints
+
+    private static int uint(byte b) {
+        return (int) b & 0xFF;
+    }
+
+    // decode 24-bit (3 bytes) into int
+
+    private int decodeBytes(byte bytes[]) {
+        return (uint(bytes[0]) << 16) + (uint(bytes[1]) << 8) + uint(bytes[2]);
+    }
+
+    // read the LAT from program memory
+
+    private void readLAT() throws IOException {
+        byte length[] = new byte[1];
+        byte lat_entry[] = new byte[3];
+
+        InputStream inputStream = new FileInputStream(Main.mainOptions.getOptionValue("compressed-binary"));
+
+        inputStream.skip(130048);
+        inputStream.read(length);
+
+        int len = length[0];
+
+        compressed_lat = new int[len];
+        uncompressed_lat = new int[len];
+
+        for(int i = 0; i < len; i++) {
+            int offset;
+
+            // offset of compressed block
+
+            inputStream.read(lat_entry);
+            offset = decodeBytes(lat_entry);
+            compressed_lat[i] = offset;
+
+            // offset of uncompressed block
+
+            inputStream.read(lat_entry);
+            offset = decodeBytes(lat_entry);
+            uncompressed_lat[i] = offset;
+        }
+    }
+
+    // calculate the block that is holding addr
+
+    private int getBlockIndexForAddress(int addr) {
+        int lat_size = uncompressed_lat.length;
+
+        for(int i = 0; i < lat_size; i++) {
+            int index = lat_size - i - 1;
+
+            if(uncompressed_lat[index] <= addr)
+              return index;
+        }
+
+        return 0;
+    }
+
+    // read specific block and decompress it
+
+    private byte[] decompressBlock(int block) throws IOException, DataFormatException {
+        byte decompressed_data[] = new byte[BLOCK_SIZE];
+        byte compressed_data[] = new byte[BLOCK_SIZE];
+
+        // read the block
+
+        InputStream input_stream = new FileInputStream(Main.mainOptions.getOptionValue("compressed-binary"));
+        
+        input_stream.skip(compressed_lat[block]);
+        input_stream.read(compressed_data);
+        input_stream.close();
+
+        // decompress the block
+
+        Inflater inflater = new Inflater();
+        inflater.setInput(compressed_data, 0, compressed_data.length);
+
+        int decompressedDataLength = inflater.inflate(decompressed_data);
+
+        return decompressed_data;
+    }
+
+    // use avr-objdump to disassemble
+
+    private String disassemble(byte binary_data[]) throws IOException, InterruptedException {
+        File binary_file = File.createTempFile("binary", ".bin");
+
+        OutputStream output_stream = new FileOutputStream(binary_file);
+        output_stream.write(binary_data);
+        output_stream.close();
+
+        // invoke avr-objdump and read output
+
+        InputStream input_stream = Runtime.getRuntime().exec("avr-objdump -b binary -m avr -zhD " + binary_file.getPath()).getInputStream();
+
+        StringBuffer string_buffer = new StringBuffer();
+        byte buffer[] = new byte[1024];
+        int length;
+
+        while((length = input_stream.read(buffer)) != -1)
+          string_buffer.append(new String(buffer, 0, length));
+
+        input_stream.close();
+        
+        // delete the temporary file
+
+        binary_file.delete();
+
+        return string_buffer.toString();
+    }
+
+    // on a cache miss we'll load the block we want to jump into, decompress the block and move on
+
+    private void cacheMiss(int addr) throws Exception {
+        long t1, t2, t3, t4, t5, t6, t7;
+
+        t1 = new Date().getTime();
+
+        block = getBlockIndexForAddress(addr);
+
+        System.out.println("cache miss for address: " + addr + " ... loading block: " + block + " at offset: " + compressed_lat[block]);
+
+        t2 = new Date().getTime();
+
+        // decompress the block
+
+        byte decompressed_data[] = decompressBlock(block);
+
+        t3 = new Date().getTime();
+
+        // disassemble the block
+
+        String assembly = disassemble(decompressed_data);
+
+        t4 = new Date().getTime();
+
+        // write assembly to a file
+        
+        File assembly_file = File.createTempFile("assembly", ".od");
+
+        Writer writer = new FileWriter(assembly_file);
+        writer.write(assembly);
+        writer.close();
+
+        t5 = new Date().getTime();
+
+        // read the block's instructions
+
+        ObjDumpProgramReader reader = new ObjDumpProgramReader();
+        String args[] = { assembly_file.getPath() };
+
+        Program program = reader.read(args);
+
+        t6 = new Date().getTime();
+
+        // fill the cache
+
+        for(int i = 0; i < cache.length; i++)
+            cache[i] = (LegacyInstr)program.readInstr(i);
+
+        t7 = new Date().getTime();
+
+        // delete the temporary file
+
+        assembly_file.delete();
+
+        System.out.println((t2 - t1) + " " + (t3 - t2) + " " + (t4 - t3) + " " + (t5 - t4) + " " + (t6 - t5) + " " + (t7 - t6));
+    }
+
+    // the getInstruction indirection to check whether we have to flush the cache or not
+
+    private LegacyInstr getInstruction(int addr) {
+        int current_block_size = BLOCK_SIZE;
+
+        if(block == -1) {
+            try {
+                cacheMiss(addr);
+            } catch(Exception e) {
+                e.printStackTrace();
+            }
+        } else {
+            if(block + 1 < uncompressed_lat.length) // block length is determined by next block offset
+                current_block_size = uncompressed_lat[block + 1] - uncompressed_lat[block];
+
+            if(addr >= uncompressed_lat[block] && addr < uncompressed_lat[block] + current_block_size) {
+                // we're within the cache
+            } else {
+                try {
+                    cacheMiss(addr);
+                } catch(Exception e) {
+                    e.printStackTrace();
+                }
+            }
+        }
+
+        return cache[addr - uncompressed_lat[block]];
+    }
+
+    public int getInstrSize(int npc) {
+        return getInstruction(npc).getSize();
     }
 
     protected void runLoop() {
@@ -84,7 +321,6 @@ public class LegacyInterpreter extends AtmelInterpreter implements LegacyInstrVi
         cyclesConsumed = 0;
 
         while (shouldRun) {
-
             // TODO: would a "mode" and switch be faster than several branches?
             if (delayCycles > 0) {
                 advanceClock(delayCycles);
@@ -157,7 +393,7 @@ public class LegacyInterpreter extends AtmelInterpreter implements LegacyInstrVi
         int cycles;
         // global probes?
         if ( globalProbe.isEmpty() ) {
-            LegacyInstr i = shared_instr[nextPC];
+            LegacyInstr i = getInstruction(nextPC);
 
             // visit the actual instruction (or probe)
             i.accept(this);
@@ -167,7 +403,7 @@ public class LegacyInterpreter extends AtmelInterpreter implements LegacyInstrVi
         } else {
             // get the current instruction
             int curPC = nextPC; // at this point pc == nextPC
-            LegacyInstr i = shared_instr[nextPC];
+            LegacyInstr i = getInstruction(nextPC);
 
             // visit the actual instruction (or probe)
             globalProbe.fireBefore(state, curPC);
@@ -250,7 +486,7 @@ public class LegacyInterpreter extends AtmelInterpreter implements LegacyInstrVi
     private void fastLoop() {
         innerLoop = true;
         while (innerLoop) {
-            LegacyInstr i = shared_instr[nextPC];
+            LegacyInstr i = getInstruction(nextPC);
 
             // visit the actual instruction (or probe)
             i.accept(this);
@@ -264,7 +500,7 @@ public class LegacyInterpreter extends AtmelInterpreter implements LegacyInstrVi
         while (innerLoop) {
             // get the current instruction
             int curPC = nextPC; // at this point pc == nextPC
-            LegacyInstr i = shared_instr[nextPC];
+            LegacyInstr i = getInstruction(nextPC);
 
             // visit the actual instruction (or probe)
             globalProbe.fireBefore(state, curPC);
