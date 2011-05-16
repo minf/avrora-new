@@ -232,8 +232,6 @@ public class LegacyInterpreter extends AtmelInterpreter implements LegacyInstrVi
 
         block = getBlockIndexForAddress(addr);
 
-        System.out.println("cache miss for address: " + addr + " ... loading block: " + block + " at offset: " + compressed_lat[block]);
-
         t2 = new Date().getTime();
 
         // decompress the block
@@ -278,7 +276,8 @@ public class LegacyInterpreter extends AtmelInterpreter implements LegacyInstrVi
 
         assembly_file.delete();
 
-        System.out.println((t2 - t1) + " " + (t3 - t2) + " " + (t4 - t3) + " " + (t5 - t4) + " " + (t6 - t5) + " " + (t7 - t6));
+        System.out.print("cache miss for address: " + addr + " ... loading block: " + block + " at offset: " + compressed_lat[block]);
+        System.out.println(" " + (t2 - t1) + " " + (t3 - t2) + " " + (t4 - t3) + " " + (t5 - t4) + " " + (t6 - t5) + " " + (t7 - t6));
     }
 
     // the getInstruction indirection to check whether we have to flush the cache or not
