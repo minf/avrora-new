@@ -79,11 +79,11 @@ public class LegacyInterpreter extends AtmelInterpreter implements LegacyInstrVi
 
     private static final int BLOCK_SIZE = 1024;
 
-    private LegacyInstr cache[] = new LegacyInstr[BLOCK_SIZE]; // the cache holds the currently executed code block in an uncompressed manner
-    private LegacyInstr caches[][] = new LegacyInstr[128][];
+    private Program caches[] = new Program[128];
     private int compressed_lat[]; // the LAT holding the offsets of the compressed code blocks
     private int uncompressed_lat[]; // the LAT holding the offsets of the uncompressed code blocks
     private int block = -1; // current block
+    private boolean read_compressed = false; // flag for microcontroller whether to hand out compressed or uncomressed data to LPM, etc.
 
     /**
      * The constructor for the <code>Interpreter</code> class builds the internal data structures needed to
@@ -236,7 +236,9 @@ public class LegacyInterpreter extends AtmelInterpreter implements LegacyInstrVi
 
         byte decompressed_data[] = decompressBlock(block);
 
-        if(caches[block] == null) { // as dissambling and parsing is taking to much time, we ignore it if done once
+        // as dissambling and parsing is taking to much time, we ignore it if done once
+
+        if(caches[block] == null) {
             // disassemble the block
 
             String assembly = disassemble(decompressed_data);
@@ -254,29 +256,15 @@ public class LegacyInterpreter extends AtmelInterpreter implements LegacyInstrVi
             ObjDumpProgramReader reader = new ObjDumpProgramReader();
             String args[] = { assembly_file.getPath() };
 
-            Program program = reader.read(args);
-
-            // fill the cache
-
-            caches[block] = new LegacyInstr[BLOCK_SIZE];
-
-            for(int i = 0; i < BLOCK_SIZE; i++)
-                caches[block][i] = (LegacyInstr)program.readInstr(i);
+            caches[block] = reader.read(args);
 
             // delete the temporary file
 
             assembly_file.delete();
         }
-
-        // copy into cache
-
-        for(int i = 0; i < BLOCK_SIZE; i++)
-          cache[i] = caches[block][i];
     }
 
-    // the getInstruction indirection to check whether we have to flush the cache or not
-
-    private LegacyInstr getInstruction(int addr) {
+    private void checkCacheMiss(int addr) {
         int current_block_size = BLOCK_SIZE;
 
         if(block == -1) {
@@ -299,16 +287,39 @@ public class LegacyInterpreter extends AtmelInterpreter implements LegacyInstrVi
                 }
             }
         }
+    }
 
-        return cache[addr - uncompressed_lat[block]];
+    private int getCacheAddress(int addr) {
+      checkCacheMiss(addr);
+
+      return addr - uncompressed_lat[block];
+    }
+
+    // the getInstruction indirection to check whether we have to flush the cache or not
+
+    private LegacyInstr getInstruction(int addr) {
+        checkCacheMiss(addr);
+
+        return (LegacyInstr)caches[block].readInstr(getCacheAddress(addr));
     }
 
     public int getInstrSize(int npc) {
         return getInstruction(npc).getSize();
     }
 
-    protected void runLoop() {
+    // we overwrite getFlashByte to hand out decompressed byte from program memory
 
+    public byte readByte(int addr) {
+      if(read_compressed)
+        return getFlashByte(addr);
+      else {
+        checkCacheMiss(addr);
+
+        return caches[block].readProgramByte(getCacheAddress(addr));
+      }
+    }
+
+    protected void runLoop() {
         pc = bootPC;
         nextPC = pc;
         cyclesConsumed = 0;
@@ -1074,21 +1085,21 @@ public class LegacyInterpreter extends AtmelInterpreter implements LegacyInstrVi
     public void visit(LegacyInstr.ELPM i) {
         nextPC = pc + 2;
         int tmp_0 = extended(getRegisterWord(RZ));
-        writeRegisterByte(R0, getFlashByte(tmp_0));
+        writeRegisterByte(R0, readByte(tmp_0));
         cyclesConsumed += 3;
     }
 
     public void visit(LegacyInstr.ELPMD i) {
         nextPC = pc + 2;
         int tmp_0 = extended(getRegisterWord(RZ));
-        writeRegisterByte(i.r1, getFlashByte(tmp_0));
+        writeRegisterByte(i.r1, readByte(tmp_0));
         cyclesConsumed += 3;
     }
 
     public void visit(LegacyInstr.ELPMPI i) {
         nextPC = pc + 2;
         int tmp_0 = extended(getRegisterWord(RZ));
-        writeRegisterByte(i.r1, getFlashByte(tmp_0));
+        writeRegisterByte(i.r1, readByte(tmp_0));
         writeRegisterWord(RZ, tmp_0 + 1);
         if ((tmp_0 & 0xFFFF) == 0xFFFF)
 	    writeIORegisterByte(RAMPZ, (byte)(getIORegisterByte(RAMPZ)+1));
@@ -1187,6 +1198,23 @@ public class LegacyInterpreter extends AtmelInterpreter implements LegacyInstrVi
     public void visit(LegacyInstr.LDI i) {
         nextPC = pc + 2;
         writeRegisterByte(i.r1, low(i.imm1));
+
+        // a chage to register register r30 to 0x93 triggers a LPM, etc to hand out compressed data
+
+        if(i.r1.toString().equals("r30") && i.imm1 == 0x93) {
+          System.out.println("microcontroller will hand out compressed data");
+
+          read_compressed = true;
+        }
+
+        // a chage to register register r30 to 0x94 triggers a LPM, etc to hand out uncompressed data
+
+        if(i.r1.toString().equals("r30") && i.imm1 == 0x94) {
+          System.out.println("microcontroller will hand out uncompressed data");
+
+          read_compressed = false;
+        }
+
         cyclesConsumed++;
     }
 
@@ -1214,20 +1242,20 @@ public class LegacyInterpreter extends AtmelInterpreter implements LegacyInstrVi
 
     public void visit(LegacyInstr.LPM i) {
         nextPC = pc + 2;
-        writeRegisterByte(R0, getFlashByte(getRegisterWord(RZ)));
+        writeRegisterByte(R0, readByte(getRegisterWord(RZ)));
         cyclesConsumed += 3;
     }
 
     public void visit(LegacyInstr.LPMD i) {
         nextPC = pc + 2;
-        writeRegisterByte(i.r1, getFlashByte(getRegisterWord(RZ)));
+        writeRegisterByte(i.r1, readByte(getRegisterWord(RZ)));
         cyclesConsumed += 3;
     }
 
     public void visit(LegacyInstr.LPMPI i) {
         nextPC = pc + 2;
         int tmp_0 = getRegisterWord(RZ);
-        writeRegisterByte(i.r1, getFlashByte(tmp_0));
+        writeRegisterByte(i.r1, readByte(tmp_0));
         writeRegisterWord(RZ, tmp_0 + 1);
         cyclesConsumed += 3;
     }
