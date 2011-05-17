@@ -80,6 +80,7 @@ public class LegacyInterpreter extends AtmelInterpreter implements LegacyInstrVi
     private static final int BLOCK_SIZE = 1024;
 
     private LegacyInstr cache[] = new LegacyInstr[BLOCK_SIZE]; // the cache holds the currently executed code block in an uncompressed manner
+    private LegacyInstr caches[][] = new LegacyInstr[128][];
     private int compressed_lat[]; // the LAT holding the offsets of the compressed code blocks
     private int uncompressed_lat[]; // the LAT holding the offsets of the uncompressed code blocks
     private int block = -1; // current block
@@ -181,7 +182,7 @@ public class LegacyInterpreter extends AtmelInterpreter implements LegacyInstrVi
         InputStream input_stream = new FileInputStream(Main.mainOptions.getOptionValue("compressed-binary"));
         
         input_stream.skip(compressed_lat[block]);
-        input_stream.read(compressed_data);
+        input_stream.read(compressed_data, 0, compressed_lat[block + 1] - compressed_lat[block]);
         input_stream.close();
 
         // decompress the block
@@ -226,58 +227,51 @@ public class LegacyInterpreter extends AtmelInterpreter implements LegacyInstrVi
     // on a cache miss we'll load the block we want to jump into, decompress the block and move on
 
     private void cacheMiss(int addr) throws Exception {
-        long t1, t2, t3, t4, t5, t6, t7;
-
-        t1 = new Date().getTime();
-
         block = getBlockIndexForAddress(addr);
 
-        t2 = new Date().getTime();
+        //System.out.println("cache miss for address: " + addr + " ... loading block: " + block + " at offset: " + compressed_lat[block]);
 
-        // decompress the block
+        // always decompress the block, no matter if already cached in caches or not
+        // this assures a more realtistic scenario
 
         byte decompressed_data[] = decompressBlock(block);
 
-        t3 = new Date().getTime();
+        if(caches[block] == null) { // as dissambling and parsing is taking to much time, we ignore it if done once
+            // disassemble the block
 
-        // disassemble the block
+            String assembly = disassemble(decompressed_data);
 
-        String assembly = disassemble(decompressed_data);
+            // write assembly to a file
+            
+            File assembly_file = File.createTempFile("assembly", ".od");
 
-        t4 = new Date().getTime();
+            Writer writer = new FileWriter(assembly_file);
+            writer.write(assembly);
+            writer.close();
 
-        // write assembly to a file
-        
-        File assembly_file = File.createTempFile("assembly", ".od");
+            // read the block's instructions
 
-        Writer writer = new FileWriter(assembly_file);
-        writer.write(assembly);
-        writer.close();
+            ObjDumpProgramReader reader = new ObjDumpProgramReader();
+            String args[] = { assembly_file.getPath() };
 
-        t5 = new Date().getTime();
+            Program program = reader.read(args);
 
-        // read the block's instructions
+            // fill the cache
 
-        ObjDumpProgramReader reader = new ObjDumpProgramReader();
-        String args[] = { assembly_file.getPath() };
+            caches[block] = new LegacyInstr[BLOCK_SIZE];
 
-        Program program = reader.read(args);
+            for(int i = 0; i < BLOCK_SIZE; i++)
+                caches[block][i] = (LegacyInstr)program.readInstr(i);
 
-        t6 = new Date().getTime();
+            // delete the temporary file
 
-        // fill the cache
+            assembly_file.delete();
+        }
 
-        for(int i = 0; i < cache.length; i++)
-            cache[i] = (LegacyInstr)program.readInstr(i);
+        // copy into cache
 
-        t7 = new Date().getTime();
-
-        // delete the temporary file
-
-        assembly_file.delete();
-
-        System.out.print("cache miss for address: " + addr + " ... loading block: " + block + " at offset: " + compressed_lat[block]);
-        System.out.println(" " + (t2 - t1) + " " + (t3 - t2) + " " + (t4 - t3) + " " + (t5 - t4) + " " + (t6 - t5) + " " + (t7 - t6));
+        for(int i = 0; i < BLOCK_SIZE; i++)
+          cache[i] = caches[block][i];
     }
 
     // the getInstruction indirection to check whether we have to flush the cache or not

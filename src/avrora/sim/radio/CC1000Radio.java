@@ -1030,12 +1030,12 @@ public class CC1000Radio implements Radio {
             spiTick = clock.getCount();
             SPI.Frame frame = spiDevice.exchange(SPI.newFrame((byte)(rxBuffer >> 8)));
             txBuffer = frame.data;
-            clock.insertEvent(this, clock.millisToCycles(1024));
+            clock.insertEvent(this, receiver.cyclesPerByte);
         }
         protected void activate() {
             if (!activated) {
                 activated = true;
-                clock.insertEvent(this, clock.millisToCycles(1024));
+                clock.insertEvent(this, receiver.cyclesPerByte);
             }
         }
         protected void deactivate() {
