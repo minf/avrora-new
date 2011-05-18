@@ -79,6 +79,10 @@ public class Simulator {
      */
     protected final int id;
 
+    public int getId() {
+      return id;
+    }
+
     /**
      * The simulation that this node is a part of.
      */

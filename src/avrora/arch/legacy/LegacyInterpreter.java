@@ -84,6 +84,8 @@ public class LegacyInterpreter extends AtmelInterpreter implements LegacyInstrVi
     private int uncompressed_lat[]; // the LAT holding the offsets of the uncompressed code blocks
     private int block = -1; // current block
     private boolean read_compressed = false; // flag for microcontroller whether to hand out compressed or uncomressed data to LPM, etc.
+    private boolean use_compression_microcontroller = false; // do we use the microcontroller at all?
+    private String compressed_binary;
 
     /**
      * The constructor for the <code>Interpreter</code> class builds the internal data structures needed to
@@ -104,10 +106,18 @@ public class LegacyInterpreter extends AtmelInterpreter implements LegacyInstrVi
         // read the LAT into memory
         // we could read the LAT on every cache miss, but for performance reasons we keep it in memory
 
-        try {
-            readLAT();
-        } catch(IOException e) {
-            e.printStackTrace();
+        compressed_binary = Main.mainOptions.getOptionValue("compressed-binary" + simulator.getId());
+
+        System.out.println("booting interpreter for id: " + simulator.getId() + "(compressed binary: " + compressed_binary + ")");
+
+        if(compressed_binary != null) {
+            use_compression_microcontroller = true;
+   
+            try {
+                readLAT();
+            } catch(IOException e) {
+                e.printStackTrace();
+            }
         }
     }
 
@@ -129,7 +139,7 @@ public class LegacyInterpreter extends AtmelInterpreter implements LegacyInstrVi
         byte length[] = new byte[1];
         byte lat_entry[] = new byte[3];
 
-        InputStream inputStream = new FileInputStream(Main.mainOptions.getOptionValue("compressed-binary"));
+        InputStream inputStream = new FileInputStream(compressed_binary);
 
         inputStream.skip(130048);
         inputStream.read(length);
@@ -179,7 +189,7 @@ public class LegacyInterpreter extends AtmelInterpreter implements LegacyInstrVi
 
         // read the block
 
-        InputStream input_stream = new FileInputStream(Main.mainOptions.getOptionValue("compressed-binary"));
+        InputStream input_stream = new FileInputStream(compressed_binary);
         
         input_stream.skip(compressed_lat[block]);
         input_stream.read(compressed_data, 0, compressed_lat[block + 1] - compressed_lat[block]);
@@ -290,17 +300,20 @@ public class LegacyInterpreter extends AtmelInterpreter implements LegacyInstrVi
     }
 
     private int getCacheAddress(int addr) {
-      checkCacheMiss(addr);
+        checkCacheMiss(addr);
 
-      return addr - uncompressed_lat[block];
+        return addr - uncompressed_lat[block];
     }
 
     // the getInstruction indirection to check whether we have to flush the cache or not
 
     private LegacyInstr getInstruction(int addr) {
-        checkCacheMiss(addr);
+        if(use_compression_microcontroller) {
+            checkCacheMiss(addr);
 
-        return (LegacyInstr)caches[block].readInstr(getCacheAddress(addr));
+            return (LegacyInstr)caches[block].readInstr(getCacheAddress(addr));
+        } else
+            return shared_instr[addr];
     }
 
     public int getInstrSize(int npc) {
@@ -310,13 +323,16 @@ public class LegacyInterpreter extends AtmelInterpreter implements LegacyInstrVi
     // we overwrite getFlashByte to hand out decompressed byte from program memory
 
     public byte readByte(int addr) {
-      if(read_compressed)
-        return getFlashByte(addr);
-      else {
-        checkCacheMiss(addr);
+        if(use_compression_microcontroller) {
+            if(read_compressed)
+              return getFlashByte(addr);
+            else {
+              checkCacheMiss(addr);
 
-        return caches[block].readProgramByte(getCacheAddress(addr));
-      }
+              return caches[block].readProgramByte(getCacheAddress(addr));
+            }
+        } else
+            return getFlashByte(addr);
     }
 
     protected void runLoop() {
